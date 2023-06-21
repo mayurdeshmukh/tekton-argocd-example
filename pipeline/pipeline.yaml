@@ -1,106 +1,113 @@
 apiVersion: tekton.dev/v1beta1
 kind: Pipeline
 metadata:
-  name: build-deploy
+  apiVersion: tekton.dev/v1beta1
+  name: java
+  namespace: demo-app
+
 spec:
   params:
-  - name: buildRevision
-    description: The revision of the build, i.e. the commit revision of the application repository
-  - name: appGitUrl
-    description: The application repository
-  - name: configGitUrl
-    description: The application config (GitOps) repository
-  - name: appImage
-    description: The application Docker image name
-  workspaces:
-  - name: app-source
-  - name: config-source
+  - name: GITHUB_REPO_URL
+    description: The application repository 
+    default: 'https://github.com/mayurdeshmukh/quarkus-random-generator'
+
+  - name: GITHUB_REPO_REVISION
+    description: Git Repo Revision
+    default: 'master'
+
+
+  - name: IMAGE
+    description: Name (reference) of the image to build.
+    default: latest
+
+  - name: DOCKERFILE
+    description: Path to the Dockerfile to build.
+    default: ./Dockerfile
+
+  - name: CONTEXT
+    description: The build context used by Kaniko.
+    default: ./
+
+  - name: EXTRA_ARGS
+    default: ""
+
+  - name: MAVEN_IMAGE
+    default: gcr.io/cloud-builders/mvn
+
+
 
   tasks:
-  - name: build-java-app
-    taskRef:
-      name: build-java-app
-    params:
-    - name: buildRevision
-      value: $(params.buildRevision)
-    - name: appGitUrl
-      value: $(params.appGitUrl)
-    - name: appImage
-      value: $(params.appImage)
-    workspaces:
-    - name: app-source
-      workspace: app-source
+    - name: git-clone
+      params:
+        - name: url
+          value:  $(params.GITHUB_REPO_URL)
 
-  - name: deploy-systemtest
-    taskRef:
-      name: deploy
-    runAfter:
-    - build-java-app
-    params:
-    - name: environment
-      value: systemtest
-    - name: argo-app-name
-      value: app-systemtest
-    - name: configGitUrl
-      value: $(params.configGitUrl)
-    - name: appImage
-      value: $(params.appImage)
-    - name: buildRevision
-      value: $(params.buildRevision)
-    workspaces:
-    - name: config-source
-      workspace: config-source
+        - name: revision
+          value:  $(params.GITHUB_REPO_REVISION)
+       
 
-  - name: run-systemtest
-    taskRef:
-      name: run-systemtest
-    runAfter:
-    - deploy-systemtest
-    params:
-    - name: gateway
-      value: 'systemtest.example.com'
-    - name: appGitUrl
-      value: $(params.appGitUrl)
-    - name: buildRevision
-      value: $(params.buildRevision)
-    workspaces:
-    - name: app-source
-      workspace: app-source
+        - name: gitInitImage
+          value: >-
+            gcr.io/tekton-releases/github.com/tektoncd/pipeline/cmd/git-init:v0.40.2
+        
+        - name: deleteExisting
+          value: 'true'
 
-  - name: deploy-prod
-    taskRef:
-      name: deploy
-    runAfter:
-    - run-systemtest
-    params:
-    - name: environment
-      value: production
-    - name: argo-app-name
-      value: app-prod
-    - name: configGitUrl
-      value: $(params.configGitUrl)
-    - name: appImage
-      value: $(params.appImage)
-    - name: buildRevision
-      value: $(params.buildRevision)
-    workspaces:
-    - name: config-source
-      workspace: config-source
+      workspaces:
+      - name: output
+        workspace: my-workspace
 
-  - name: run-prod-smoketest
-    taskRef:
-      name: run-smoketest
-    runAfter:
-    - deploy-prod
-    params:
-    - name: gateway
-      value: 'example.com'
-    - name: buildRevision
-      value: $(params.buildRevision)
-    - name: appGitUrl
-      value: $(params.appGitUrl)
-    workspaces:
-    - name: app-source
-      workspace: app-source
----
+      taskRef:
+        kind: Task
+        name: git-clone
+ 
+    - name: maven-build
+      params:
+        - name: GOAL
+          value: 
+            - clean
+            - install
 
+        - name: MAVEN_IMAGE
+          value: $(params.MAVEN_IMAGE)
+
+      taskRef:
+        kind: ClusterTask
+        name: maven
+      
+      runAfter:
+      - git-clone
+
+      workspaces:
+      - name: source
+        workspace: my-workspace
+
+      - name: maven-settings
+        workspace: maven-settings
+
+
+    - name: docker-build
+      params:
+        - name: CONTEXT
+          value:  $(params.CONTEXT)
+
+        - name: DOCKERFILE
+          value:  $(params.DOCKERFILE)
+        
+        - name: IMAGE
+          value: $(params.IMAGE)
+
+      taskRef:
+        kind: ClusterTask
+        name: buildah
+
+      runAfter:
+      - maven-build
+
+      workspaces:
+      - name: source
+        workspace: my-workspace
+
+  workspaces:
+    - name: my-workspace
+    - name: maven-settings
